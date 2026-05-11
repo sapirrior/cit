@@ -23,8 +23,22 @@ char *get_current_branch() {
     return NULL;
 }
 
-int update_ref(const char *ref_path, const char *sha256) {
+int write_ref(const char *ref_path, const char *sha256) {
     char full_ref_path[512];
     snprintf(full_ref_path, sizeof(full_ref_path), ".cit/%s", ref_path);
+    
+    // Create parent directories if they don't exist (e.g., refs/heads/feature/)
+    char dir[512];
+    strcpy(dir, full_ref_path);
+    char *last_slash = strrchr(dir, '/');
+    if (last_slash) {
+        *last_slash = 0;
+        mkdir_p(dir);
+    }
+    
     return write_string_to_file(full_ref_path, sha256);
+}
+
+int update_ref(const char *ref_path, const char *sha256) {
+    return write_ref(ref_path, sha256);
 }

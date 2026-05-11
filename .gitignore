@@ -3,3 +3,4 @@ assets/
 tests/**/.cit/
 GEMINI.md
 .gemini/
+tests/sandbox/

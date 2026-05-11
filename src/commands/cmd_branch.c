@@ -8,6 +8,40 @@
 #include <string.h>
 #include <dirent.h>
 
+static void list_branches_recursive(const char *base_path, const char *rel_path, const char *current) {
+    char full_path[1024];
+    snprintf(full_path, sizeof(full_path), "%s/%s", base_path, rel_path);
+    
+    DIR *dir = opendir(full_path);
+    if (!dir) return;
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        
+        char next_rel[1024];
+        if (strlen(rel_path) == 0) {
+            snprintf(next_rel, sizeof(next_rel), "%s", entry->d_name);
+        } else {
+            snprintf(next_rel, sizeof(next_rel), "%s/%s", rel_path, entry->d_name);
+        }
+
+        char next_full[1024];
+        snprintf(next_full, sizeof(next_full), "%s/%s", base_path, next_rel);
+
+        if (dir_exists(next_full)) {
+            list_branches_recursive(base_path, next_rel, current);
+        } else {
+            if (current && strcmp(next_rel, current) == 0) {
+                printf("* " COLOR_FG_SUCCESS "%s" COLOR_RESET "\n", next_rel);
+            } else {
+                printf("  %s\n", next_rel);
+            }
+        }
+    }
+    closedir(dir);
+}
+
 int cmd_branch(int argc, char *argv[]) {
     if (argc > 1 && !check_config()) {
         fprintf(stderr, "Error: User configuration (username and email) not found.\n");
@@ -17,19 +51,8 @@ int cmd_branch(int argc, char *argv[]) {
 
     if (argc == 1) {
         // List branches
-        DIR *dir = opendir(".cit/refs/heads");
-        if (!dir) return 1;
         char *current = get_current_branch();
-        struct dirent *entry;
-        while ((entry = readdir(dir)) != NULL) {
-            if (entry->d_name[0] == '.') continue;
-            if (current && strcmp(entry->d_name, current) == 0) {
-                printf("* " COLOR_FG_SUCCESS "%s" COLOR_RESET "\n", entry->d_name);
-            } else {
-                printf("  %s\n", entry->d_name);
-            }
-        }
-        closedir(dir);
+        list_branches_recursive(".cit/refs/heads", "", current);
         return 0;
     }
 
@@ -55,14 +78,10 @@ int cmd_branch(int argc, char *argv[]) {
             return 1;
         }
 
-        char new_ref_path[512];
-        snprintf(new_ref_path, sizeof(new_ref_path), ".cit/refs/heads/%s", new_branch);
-        if (is_file(new_ref_path)) {
-            fprintf(stderr, "Error: Branch %s already exists.\n", new_branch);
-            return 1;
-        }
-
-        if (write_string_to_file(new_ref_path, current_sha) != 0) {
+        char rel_ref_path[512];
+        snprintf(rel_ref_path, sizeof(rel_ref_path), "refs/heads/%s", new_branch);
+        
+        if (write_ref(rel_ref_path, current_sha) != 0) {
             fprintf(stderr, "Error: Could not create branch %s.\n", new_branch);
             return 1;
         }

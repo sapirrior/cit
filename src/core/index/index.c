@@ -4,6 +4,10 @@
 #include <string.h>
 #include <sys/stat.h>
 
+static int compare_entries(const void *a, const void *b) {
+    return strcmp(((IndexEntry *)a)->path, ((IndexEntry *)b)->path);
+}
+
 Index *read_index() {
     Index *index = malloc(sizeof(Index));
     if (!index) return NULL;
@@ -17,6 +21,7 @@ Index *read_index() {
         index->entries = malloc(sizeof(IndexEntry) * index->count);
         if (index->entries) {
             fread(index->entries, sizeof(IndexEntry), index->count, f);
+            // Index should already be sorted on disk, but we can verify if needed
         } else {
             index->count = 0;
         }
@@ -28,6 +33,11 @@ Index *read_index() {
 int write_index(Index *index) {
     FILE *f = fopen(".cit/index", "wb");
     if (!f) return -1;
+
+    // Optional: Sort before writing to ensure disk integrity
+    if (index->count > 1) {
+        qsort(index->entries, index->count, sizeof(IndexEntry), compare_entries);
+    }
 
     fwrite(&index->count, sizeof(uint32_t), 1, f);
     if (index->count > 0) {
@@ -43,36 +53,50 @@ void free_index(Index *index) {
 }
 
 int add_to_index(Index *index, const char *path, const uint8_t sha256[32], uint32_t size) {
-    // Check if entry already exists
-    for (uint32_t i = 0; i < index->count; i++) {
-        if (strcmp(index->entries[i].path, path) == 0) {
-            memcpy(index->entries[i].sha256, sha256, 32);
-            index->entries[i].size = size;
-            // Update mtime
-            struct stat st;
-            stat(path, &st);
-            index->entries[i].mtime = st.st_mtime;
-            return 0;
+    int low = 0, high = (int)index->count - 1;
+    int mid = 0, cmp;
+    int found = 0;
+
+    while (low <= high) {
+        mid = low + (high - low) / 2;
+        cmp = strcmp(index->entries[mid].path, path);
+        if (cmp == 0) {
+            low = mid;
+            found = 1;
+            break;
         }
+        if (cmp < 0) low = mid + 1;
+        else high = mid - 1;
     }
 
-    // Add new entry
+    if (found) {
+        memcpy(index->entries[low].sha256, sha256, 32);
+        index->entries[low].size = size;
+        struct stat st;
+        stat(path, &st);
+        index->entries[low].mtime = (uint32_t)st.st_mtime;
+        return 0;
+    }
+
     index->count++;
     IndexEntry *new_entries = realloc(index->entries, sizeof(IndexEntry) * index->count);
     if (!new_entries) {
-        fprintf(stderr, "Error: Memory allocation failed during index update.\n");
         index->count--;
         return -1;
     }
     index->entries = new_entries;
-    
-    strcpy(index->entries[index->count - 1].path, path);
-    memcpy(index->entries[index->count - 1].sha256, sha256, 32);
-    index->entries[index->count - 1].size = size;
+
+    if ((uint32_t)low < index->count - 1) {
+        memmove(&index->entries[low + 1], &index->entries[low], (index->count - 1 - low) * sizeof(IndexEntry));
+    }
+
+    strncpy(index->entries[low].path, path, sizeof(index->entries[low].path) - 1);
+    memcpy(index->entries[low].sha256, sha256, 32);
+    index->entries[low].size = size;
     
     struct stat st;
     stat(path, &st);
-    index->entries[index->count - 1].mtime = st.st_mtime;
+    index->entries[low].mtime = (uint32_t)st.st_mtime;
     
     return 0;
 }

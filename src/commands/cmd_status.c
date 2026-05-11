@@ -16,12 +16,15 @@ static void scan_working_dir(const char *path, Index *index, char ***untracked, 
         if (strncmp(path, "./", 2) == 0) norm_path = path + 2;
 
         int found_in_index = 0;
-        for (uint32_t i = 0; i < index->count; i++) {
-            if (strcmp(index->entries[i].path, norm_path) == 0) {
+        int low = 0, high = (int)index->count - 1;
+        while (low <= high) {
+            int mid = low + (high - low) / 2;
+            int cmp = strcmp(index->entries[mid].path, norm_path);
+            if (cmp == 0) {
                 found_in_index = 1;
                 struct stat st;
                 if (stat(path, &st) == 0) {
-                    if ((uint32_t)st.st_mtime != index->entries[i].mtime || (uint32_t)st.st_size != index->entries[i].size) {
+                    if ((uint32_t)st.st_mtime != index->entries[mid].mtime || (uint32_t)st.st_size != index->entries[mid].size) {
                         char **new_modified = realloc(*modified, sizeof(char *) * (*modified_count + 1));
                         if (new_modified) {
                             *modified = new_modified;
@@ -32,6 +35,8 @@ static void scan_working_dir(const char *path, Index *index, char ***untracked, 
                 }
                 break;
             }
+            if (cmp < 0) low = mid + 1;
+            else high = mid - 1;
         }
         if (!found_in_index) {
             char **new_untracked = realloc(*untracked, sizeof(char *) * (*untracked_count + 1));
