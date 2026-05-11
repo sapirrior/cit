@@ -1,10 +1,10 @@
 #include "object.h"
 #include "sha256.h"
 #include "utils.h"
+#include "cit_compress.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <zlib.h>
 
 static void hash_to_hex(const uint8_t hash[32], char hex[65]) {
     for (int i = 0; i < 32; i++) {
@@ -22,18 +22,16 @@ char *write_object(const void *buf, size_t len, obj_type type) {
         default: return NULL;
     }
 
-    // Git-style header: "type size\0"
+    // Header: "type size\0"
     char header[64];
     int header_len = sprintf(header, "%s %zu", type_str, len) + 1;
 
-    // Combined buffer for hashing and compression
     size_t total_len = header_len + len;
     uint8_t *combined = malloc(total_len);
     if (!combined) return NULL;
     memcpy(combined, header, header_len);
     memcpy(combined + header_len, buf, len);
 
-    // Calculate SHA-256
     SHA256_CTX ctx;
     uint8_t hash[32];
     sha256_init(&ctx);
@@ -47,22 +45,23 @@ char *write_object(const void *buf, size_t len, obj_type type) {
     }
     hash_to_hex(hash, hex);
 
-    // Path setup
     char dir[256];
     snprintf(dir, sizeof(dir), ".cit/objects/%.2s", hex);
     mkdir_p(dir);
     char path[512];
     snprintf(path, sizeof(path), "%s/%s", dir, hex + 2);
 
-    // Compress using compress() for simplicity
-    uLongf dest_len = compressBound(total_len);
-    void *dest = malloc(dest_len);
+    // Compress using CIT-LZ
+    size_t dest_cap = cit_compress_bound(total_len);
+    void *dest = malloc(dest_cap);
+    size_t dest_len = 0;
     if (!dest) {
         free(combined);
         free(hex);
         return NULL;
     }
-    if (compress(dest, &dest_len, combined, total_len) != Z_OK) {
+
+    if (cit_compress(combined, total_len, dest, &dest_len) != 0) {
         free(combined);
         free(dest);
         free(hex);
@@ -102,60 +101,24 @@ void *read_object(const char *hex, size_t *len, obj_type *type) {
     }
     fclose(f);
 
-    // Dynamic decompression using inflate
-    uLongf dest_cap = 1024 * 1024; // Start with 1MB
-    void *dest = malloc(dest_cap);
+    // Read original size from CITZ header (offset 4)
+    uint64_t original_size = *(uint64_t *)((uint8_t *)compressed + 4);
+    void *dest = malloc(original_size + 1);
     if (!dest) {
         free(compressed);
         return NULL;
     }
 
-    z_stream strm = {0};
-    strm.next_in = (Bytef *)compressed;
-    strm.avail_in = (uInt)compressed_len;
-    strm.next_out = (Bytef *)dest;
-    strm.avail_out = (uInt)dest_cap;
-
-    if (inflateInit(&strm) != Z_OK) {
+    if (cit_decompress(compressed, compressed_len, dest, original_size) != 0) {
         free(compressed);
         free(dest);
         return NULL;
     }
-
-    int ret;
-    while ((ret = inflate(&strm, Z_NO_FLUSH)) == Z_BUF_ERROR || ret == Z_OK) {
-        if (strm.avail_out == 0) {
-            dest_cap *= 2;
-            void *new_dest = realloc(dest, dest_cap);
-            if (!new_dest) {
-                inflateEnd(&strm);
-                free(compressed);
-                free(dest);
-                return NULL;
-            }
-            dest = new_dest;
-            strm.next_out = (Bytef *)dest + strm.total_out;
-            strm.avail_out = (uInt)(dest_cap - strm.total_out);
-        } else if (ret == Z_OK && strm.avail_in == 0) {
-            break; // Finished
-        }
-    }
-
-    if (ret != Z_STREAM_END && ret != Z_OK) {
-        inflateEnd(&strm);
-        free(compressed);
-        free(dest);
-        return NULL;
-    }
-
-    size_t total_out = strm.total_out;
-    inflateEnd(&strm);
     free(compressed);
 
     char *header = (char *)dest;
     size_t header_len = 0;
-    // Find the null terminator of the header
-    for (size_t i = 0; i < total_out; i++) {
+    for (size_t i = 0; i < original_size; i++) {
         if (header[i] == '\0') {
             header_len = i + 1;
             break;
@@ -175,7 +138,7 @@ void *read_object(const char *hex, size_t *len, obj_type *type) {
         return NULL;
     }
 
-    size_t data_len = total_out - header_len;
+    size_t data_len = original_size - header_len;
     *len = data_len;
 
     void *result = malloc(data_len + 1);

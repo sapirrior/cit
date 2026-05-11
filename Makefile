@@ -7,9 +7,10 @@ CFLAGS = -Wall -g \
          -Isrc/core/config \
          -Isrc/core/refs \
          -Isrc/commands \
+         -Isrc/core/compress \
          -Isrc/utils \
          -Isrc/ui
-LDFLAGS = -lz -lcurl
+LDFLAGS = -lcurl
 
 SRC = $(shell find src -name "*.c")
 BUILD_DIR = build
