@@ -65,6 +65,21 @@ static int checkout_tree(const char *tree_sha, const char *base_path, Index *ind
     return 0;
 }
 
+static void remove_empty_parents(const char *path) {
+    char dir[1024];
+    strncpy(dir, path, sizeof(dir) - 1);
+    dir[sizeof(dir) - 1] = '\0';
+    char *last_slash = strrchr(dir, '/');
+    while (last_slash) {
+        *last_slash = '\0';
+        if (strlen(dir) == 0) break;
+        if (rmdir(dir) != 0) {
+            break;
+        }
+        last_slash = strrchr(dir, '/');
+    }
+}
+
 int cmd_checkout(int argc, char *argv[]) {
     if (argc < 2) {
         printf("Usage: cit checkout <commit-sha|branch-name>\n");
@@ -83,11 +98,11 @@ int cmd_checkout(int argc, char *argv[]) {
     strncpy(target_sha, resolved_sha, 64);
     target_sha[64] = 0;
 
-    // 2. Update HEAD
+    // 2. Update HEAD (distinguish branch vs raw SHA by checking branch file existence)
     char head_content[256];
     char branch_path[512];
-    snprintf(branch_path, sizeof(branch_path), "refs/heads/%s", target);
-    if (get_ref_sha(target)) {
+    snprintf(branch_path, sizeof(branch_path), ".cit/refs/heads/%s", target);
+    if (is_file(branch_path)) {
         snprintf(head_content, sizeof(head_content), "ref: refs/heads/%s\n", target);
     } else {
         snprintf(head_content, sizeof(head_content), "%s\n", target_sha);
@@ -117,12 +132,46 @@ int cmd_checkout(int argc, char *argv[]) {
         return 1;
     }
 
-    // 4. Recursive checkout
-    Index *index = read_index();
-    // Clear index first? For now, we update it.
-    checkout_tree(tree_sha, "", index);
-    write_index(index);
-    free_index(index);
+    // 4. Recursive checkout into a fresh new index
+    Index *old_index = read_index();
+    Index *new_index = malloc(sizeof(Index));
+    if (!new_index) {
+        free_index(old_index);
+        return 1;
+    }
+    new_index->count = 0;
+    new_index->entries = NULL;
+
+    checkout_tree(tree_sha, "", new_index);
+
+    // Remove files from working directory that are in the old index but not in the new tree
+    for (uint32_t i = 0; i < old_index->count; i++) {
+        const char *old_path = old_index->entries[i].path;
+        int found_in_new = 0;
+        // Search in new_index (binary search since it's sorted or we can just scan)
+        int low = 0, high = (int)new_index->count - 1;
+        while (low <= high) {
+            int mid = low + (high - low) / 2;
+            int cmp = strcmp(new_index->entries[mid].path, old_path);
+            if (cmp == 0) {
+                found_in_new = 1;
+                break;
+            }
+            if (cmp < 0) low = mid + 1;
+            else high = mid - 1;
+        }
+
+        if (!found_in_new) {
+            if (is_file(old_path)) {
+                unlink(old_path);
+                remove_empty_parents(old_path);
+            }
+        }
+    }
+
+    write_index(new_index);
+    free_index(old_index);
+    free_index(new_index);
 
     printf("Switched to %s\n", target);
     return 0;

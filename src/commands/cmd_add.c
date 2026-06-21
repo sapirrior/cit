@@ -69,7 +69,15 @@ static int add_file(Index *index, const char *path) {
 }
 
 static int add_recursive(Index *index, const char *path) {
-    if (strstr(path, ".cit")) return 0;
+    // Skip the .cit directory itself and anything inside it
+    const char *p = path;
+    while (p) {
+        if (strncmp(p, ".cit", 4) == 0 && (p[4] == '\0' || p[4] == '/')) {
+            return 0;
+        }
+        p = strchr(p, '/');
+        if (p) p++;
+    }
 
     if (is_file(path)) {
         return add_file(index, path);
